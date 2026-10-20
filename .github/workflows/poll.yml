@@ -1,0 +1,571 @@
+name: YouTube 更新提醒
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yt2qq
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 拉取仓库
+        uses: actions/checkout@v4
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 检查更新并发送邮件
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          cat > poll.js <<'YTS_EOF'
+          'use strict';
+
+          /**
+           * yt2qq —— GitHub Actions 版
+           * 每 15 分钟拉一遍所有频道的 RSS，有新视频就发一封汇总邮件。
+           * 无第三方依赖：HTTP 用内置 fetch，邮件用手写的 SMTP 客户端。
+           */
+
+          // ───────────── 渠道列表（构建时注入） ─────────────
+          const CHANNELS = /*__CHANNELS__*/ [
+            { id: "UC-B7aBOFc2hUcCxricMazuQ", name: "怪物彈珠〈Monster Strike_TW〉" },
+            { id: "UC03dPGSvrlMsmwtpuKFdzgg", name: "NARUTO / BORUTO Official Channel" },
+            { id: "UC0OXPEQRKArB_EVyFMwDbAQ", name: "テレ東アニメ" },
+            { id: "UC0eK2Iye99OGeO6cfGVvvWA", name: "東映動畫亞洲 Toei Animation Asia" },
+            { id: "UC0wNSTMWIL3qaorLx0jie6A", name: "Ani-One Asia" },
+            { id: "UC14QT5j2nQI8lKBCGtrrBQA", name: "アニプレックス チャンネル" },
+            { id: "UC14Yc2Qv92DMuyNRlHvpo2Q", name: "TOHO animation チャンネル" },
+            { id: "UC1Wp3qfvlq1GybWL6C85jSw", name: "ヴァンガードチャンネル【アニメ「Divinez 幻真星戦編」配信中!!】" },
+            { id: "UC2dXx-3RXeeP8hA5AGt8vuw", name: "初星学園" },
+            { id: "UC45ONEZZfMDZCnEhgYmVu-A", name: "Ani-One中文官方動畫頻道" },
+            { id: "UC47AYUs8AVU1QsT5LhpXjaw", name: "ジャンプチャンネル" },
+            { id: "UC4YaOt1yT-ZeyB0OmxHgolA", name: "Kizuna AI - A.I.Channel" },
+            { id: "UC4c-wTOqEID-_vH4MhNs06w", name: "巴哈姆特電玩瘋" },
+            { id: "UC5PBnSG7C0WXp5gjd4bzKtw", name: "ウルトラマン公式 ULTRAMAN OFFICIAL by TSUBURAYA PROD." },
+            { id: "UC5S8dDswLqbnm9fuZ8Z2ntQ", name: "TWIN ENGINE" },
+            { id: "UC6FS-KKX0Se3EpRhSn-i-Ng", name: "「遊☆戯☆王」アニメ公式チャンネル" },
+            { id: "UC6PQa4s5ibwkkipnVcsYcWw", name: "Gura" },
+            { id: "UC6aRb6LAGq2-UNtTwe8pFxQ", name: "【公式】ロシデレチャンネル" },
+            { id: "UC6pGDc4bFGD1_36IKv3FnYg", name: "Crunchyroll" },
+            { id: "UC7wu64jFsV02bbu6UHUd7JA", name: "ガンダムチャンネル" },
+            { id: "UC8T8_deSUS97DWZeKO_TL9Q", name: "NHK MUSIC" },
+            { id: "UCAWxPGGuIfWME2KTLUmSCHw", name: "ぱかチューブっ!【ウマ娘公式】" },
+            { id: "UCB9PCbEHinUSjtqBAkR40ug", name: "【PicoAni】テレビ朝日ショートアニメ公式チャンネル" },
+            { id: "UCBMjeLHiQ_Rw4mHk4SYX8og", name: "アニメ「魔入りました!入間くん」公式Anime OFFICIAL" },
+            { id: "UCBSs9x2KzSLhyyA9IKyt4YA", name: "Netflix Anime" },
+            { id: "UCBV4S3kliBSKTFswcTEhC9w", name: "グランブルーファンタジー公式チャンネル" },
+            { id: "UCCE2LCn3VsbIMdO17baUVxg", name: "とあるプロジェクト公式toaru.project" },
+            { id: "UCCNniqSB-QpAb4IPCzLAwGA", name: "コンパイルハート" },
+            { id: "UCCPYSMEnbeepGM7RU6qxyUA", name: "Muse木棉花-闔家歡" },
+            { id: "UCCaZwRx_HS61ZiNUrBdmDoA", name: "Frontwing" },
+            { id: "UCD9chutvV9AZ3Fc-5VGS0Tg", name: "Koei Tecmo Taiwan 臺灣光榮特庫摩" },
+            { id: "UCF7JaqjycnRIdV9erXp2eyg", name: "AnimeloSummerLive" },
+            { id: "UCFEM0LGpRmWldedICg2Gh5Q", name: "TVアニメ『ぬきたし THE ANIMATION』公式" },
+            { id: "UCFoS_FzutpGb3EDH3dZ47sw", name: "ブシロード公式チャンネル" },
+            { id: "UCGc93NguHRwzv1Rw9MyIcxQ", name: "鳴潮 (Wuthering Waves)公式" },
+            { id: "UCI4kCOGFXW7-tpdCSBMmsJw", name: "ファルコムチャンネル" },
+            { id: "UCIOa6O6x-HmHnyJJKmrrCfg", name: "Tachibana Hibiki" },
+            { id: "UCJwGWV914kBlV4dKRn7AEFA", name: "Hatsune Miku" },
+            { id: "UCLG2YMQJBr0uCPbPhbn2wCg", name: "魔王様、リトライ!R公式" },
+            { id: "UCLI0h6wX_RpEbDcB11UV_RA", name: "勝利女神 : 妮姬" },
+            { id: "UCLUUU-gAiTWdi67Vv1MOCRA", name: "水樹奈々" },
+            { id: "UCLhgIX2L5ZCaWdlaxR_oTAg", name: "東映アニメーション公式YouTubeチャンネル" },
+            { id: "UCNrdR2m8fxDBNbxJDBFPFNQ", name: "『超かぐや姫 ! 』公式" },
+            { id: "UCOsFUU8EtJGDd6-AouF_MwQ", name: "Muse木棉花-HK" },
+            { id: "UCOzWD4b_-q77XTaSl89OukA", name: "yuzusoft公式チャンネル" },
+            { id: "UCPKVAsHJPUd8vslgQJMPvjg", name: "【公式】ケロロチャンネル" },
+            { id: "UCQ5URCSs1f5Cz9rh-cDGxNQ", name: "バンダイナムコフィルムワークス チャンネル" },
+            { id: "UCRWGKdyjOZE9zeerOPYb1qQ", name: "コンシューマ&アミューズメント - マーベラス公式チャンネル" },
+            { id: "UCRc3mprfrE8qaugB1VfQXiA", name: "ufotable" },
+            { id: "UCSECkCuFpjNrO9CQ-uvQqcg", name: "戦姫絶唱シンフォギアYouTube Official Channel" },
+            { id: "UCSMaQ6UNtJilCwGz0fFTaAg", name: "オーバーラップチャンネル" },
+            { id: "UCSsjL41NsyqSNNbanuI0htg", name: "プリキュア公式YouTubeチャンネル" },
+            { id: "UCTDMT3aL30noTVFgNPA9XtQ", name: "東宝MOVIEチャンネル" },
+            { id: "UCTTtobI0Us5aRHW5xvqbprQ", name: "さばみそ" },
+            { id: "UCTacGY6X1JEXlM07YoduC7Q", name: "Siro Games" },
+            { id: "UCTkyJbRhal4voLZxmdRSssQ", name: "(Love Live! series)ラブライブ！シリーズ公式チャンネル" },
+            { id: "UCU3MNBzIn5j2j38OpYdSkog", name: "Cygames公式チャンネル" },
+            { id: "UCU8sP51FYw91tSUdp9nlVIQ", name: "TVアニメ『ヤニねこ』公式【ハメちゃんねる】" },
+            { id: "UCUCeZaZeJbEYAAzvMgrKOPQ", name: "Kenshi Yonezu  米津玄師" },
+            { id: "UCUqd0xbC7x1xc_T7vERlMYQ", name: "東山奈央" },
+            { id: "UCUsB9KTwSGgPlIARzdaKb_Q", name: "寶可夢 官方" },
+            { id: "UCWFGbv56ch1OC3-mMqg4VVg", name: "とらのあな_Official" },
+            { id: "UCWwMi0esTLPWkdH3ddOehQA", name: "ふにちかチャンネル" },
+            { id: "UCWzenZSy9GJBcPzdSm-UX5w", name: "【モンスト】ストライクワールド公式" },
+            { id: "UCXBgKqFxSjKADEuMLkc1Bpg", name: "【公式】Fate/Grand Order チャンネル" },
+            { id: "UCXqa0QI6FU-09gkU40dQALw", name: "KOTOBUKIYA TV" },
+            { id: "UCY5fcqgSrQItPAX_Z5Frmwg", name: "KADOKAWAanime" },
+            { id: "UCYhP4CpF6ILT751stPPdoZg", name: "【GBVS】グランブルーファンタジー ヴァーサス公式チャンネル" },
+            { id: "UCYkuIMi5szEmbO-uiuv2GCw", name: "メタスト公式" },
+            { id: "UC_F8DoJf9MZogEOU51TpTbQ", name: "Clash Royale" },
+            { id: "UC_SI1j1d8vJo_rYMV5o_dRg", name: "ポケモン公式YouTubeチャンネル" },
+            { id: "UCb-ekPowbBlQhyt7ZXPiu5Q", name: "ぽにきゃん-Anime PONY CANYON" },
+            { id: "UCcjqSFXBg2cGQg5r0YooMiA", name: "Warner Bros. Japan Anime" },
+            { id: "UCd9BXPj-KcMTh0HiB-Vlb8A", name: "モンスト（モンスターストライク）公式" },
+            { id: "UCdAHaWcKdpbT5XkN2Er6BUQ", name: "ONE PIECE公式YouTubeチャンネル" },
+            { id: "UCeH360abfAGTyTpi3nmVwXw", name: "Netflix Taiwan" },
+            { id: "UCeOMz8AiNhsDhEovu5_3ujQ", name: "NBCUniversal Anime/Music" },
+            { id: "UCeagNi3-wLiok3MWPIHAScw", name: "isekai channel @バンダイナムコフィルムワークス" },
+            { id: "UCefWnTLkdVZpksbSBLEhKRw", name: "genco promotion" },
+            { id: "UCevD0wKzJFpfIkvHOiQsfLQ", name: "ひなたチャンネル (Hinata Channel)" },
+            { id: "UCf11M1M1HcVZkxY20gdIrYQ", name: "集英社マンガ公式" },
+            { id: "UCfmuCsJEmscQ483p5Op0w6A", name: "デジモン公式チャンネル" },
+            { id: "UCgdwtyqBunlRb-i-7PnCssQ", name: "Muse木棉花-TW" },
+            { id: "UChLtl5F5QuXoUUzlagvHY7A", name: "【怪物彈珠】彈珠世界 官方 [繁體中文版]" },
+            { id: "UChR0pzeaikeQOheRXrr7gHQ", name: "このファン公式チャンネル" },
+            { id: "UChu8Yu_w9z8DGFtXzuGvDlg", name: "【公式】邪神ちゃんねる【切り抜きOK】" },
+            { id: "UCiC9V-H7PCw4Usnm5T_BN7g", name: "モンストシリーズ" },
+            { id: "UCiPSajGFI4ja74nYPU1MexA", name: "プリンセスコネクト!Re:Dive チャンネル" },
+            { id: "UCih9DhZqHc-suvfasW_wN5A", name: "动漫 怪物弹珠 [中文简体字幕]" },
+            { id: "UCjfAEJZdfbIjVHdo5yODfyQ", name: "MAPPA CHANNEL" },
+            { id: "UCk3IK8JPNNF-nKf7jsMvTlg", name: "テラッチチャンネル" },
+            { id: "UCkH3CcMfqww9RsZvPRPkAJA", name: "Nintendo 公式チャンネル" },
+            { id: "UCkVvAm5jb62IMIJQj4wPVGA", name: "TMSアニメ公式チャンネル" },
+            { id: "UCkYRZZxbe0BmDWHffnR3hAQ", name: "AnimeJapan (アニメジャパン)" },
+            { id: "UCksojAe3d3aHJHt1Wgjn0jA", name: "FURYU Pictures Channel" },
+            { id: "UClUXrlVXObCTtUNeLwd-0wg", name: "【公式】スクフェスチャンネル" },
+            { id: "UClgrS5WzqIn_0Ba4yly0edg", name: "Cygames EN" },
+            { id: "UCmDLyFjSutfb1MK7F6cMVSA", name: "サンライズ  SUNRISE Official" },
+            { id: "UCmgf8DJrAXFnU7j3u0kklUQ", name: "ブルーアーカイブ-Blue Archive-" },
+            { id: "UCn5KG-OoKv5Qgc5Pym9-64w", name: "Shadowverse Channel" },
+            { id: "UCnFCcjWT8OvUKIxICw-T2MQ", name: "Marvelous Inc." },
+            { id: "UCnUzafAtfncBzTml2muIUEQ", name: "アズールレーン" },
+            { id: "UCn_aYp-WejEzxkHvD_fYUGQ", name: "Granblue Fantasy: Relink Official Channel" },
+            { id: "UCnkURqM-yYxRW8TVRGZoFPw", name: "Floresce Gaming Channel" },
+            { id: "UCoIkccJcBM1MBJEgQ4p5p7Q", name: "電撃文庫チャンネル" },
+            { id: "UCqItq83Y0wdZ3vawrz7NAfg", name: "Yugo Kanno - Topic" },
+            { id: "UCqmVOBOLzaLEOb6Tpb4zPYQ", name: "TBSアニメ" },
+            { id: "UCqy1WkAgP2TEUhMO4W12DeQ", name: "TVアニメ「シャングリラ・フロンティア」公式" },
+            { id: "UCrnp_Uhv8sDPz74LpslpE_w", name: "DMM GAMES公式チャンネル" },
+            { id: "UCsj_CYajUSQ2ca8bYCMan9g", name: "It's Anime powered by REMOW" },
+            { id: "UCt09C9DPSuOGpHoitbcyCIQ", name: "ゼンレスゾーンゼロ-ZZZ-公式" },
+            { id: "UCtG2ospXrllukLp5TorrKzw", name: "闇影詩章 Shadowverse 台灣官方頻道" },
+            { id: "UCtPyU9cJgvvgH03PQKgaucA", name: "ファミ通TUBE" },
+            { id: "UCt_XdtyWNVenULI5DylX8-A", name: "GOOD SMILE CHANNEL" },
+            { id: "UCvC4D8onUfXzvjTOM-dBfEA", name: "Marvel Entertainment" },
+            { id: "UCvCnMeBahhM8wfADjUhNBvQ", name: "Shadowverse Channel" },
+            { id: "UCvP9G8Z5ndG4-GX81vhgmDg", name: "【公式】遊戯王OCGチャンネル" },
+            { id: "UCvi81mltkpbF2UEvC_e864g", name: "勝利の女神:NIKKE" },
+            { id: "UCvoQlzEzqa6vQA8hq9GNNug", name: "アークナイツ 公式チャンネル" },
+            { id: "UCwR6z7fsMpHPjypxQxMYAjw", name: "『BLEACH』アニメ公式チャンネル" },
+            { id: "UCxL_Vlnhfo46sN6vPHR_4hA", name: "夢限大みゅーたいぷ" },
+            { id: "UCxbkConJdaFjgwKXv4POaeA", name: "でんおこ DEN_OKO【ゲーム実況&アニメ・マンガ解説】" },
+            { id: "UCxjDkUwVlBILmkwOzQKTkmw", name: "ワールドトリガー アニメ公式" },
+            { id: "UCyuEAZQzRqhcaLZvQd9ZUNA", name: "CapcomChannel" },
+          ];
+
+          // ───────────── 配置 ─────────────
+          const FEED_TEMPLATE =
+            process.env.FEED_TEMPLATE || 'https://www.youtube.com/feeds/videos.xml?channel_id={id}';
+          const STATE_PATH = process.env.STATE_PATH || 'state.json';
+          const MAX_AGE_HOURS = Number(process.env.MAX_AGE_HOURS || '24');
+          const MAX_ITEMS_PER_MAIL = Number(process.env.MAX_ITEMS_PER_MAIL || '20');
+          const CONCURRENCY = Number(process.env.CONCURRENCY || '8');
+          const TIMEOUT_MS = Number(process.env.TIMEOUT_MS || '20000');
+          const DRY_RUN = process.env.DRY_RUN === '1';
+          const SKIP_PATTERNS = String(process.env.SKIP_PATTERNS || '#shorts')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+
+          const SMTP = {
+            host: process.env.SMTP_HOST || '',
+            port: Number(process.env.SMTP_PORT || '465'),
+            secure: process.env.SMTP_SECURE !== 'false',
+            user: process.env.SMTP_USER || '',
+            pass: process.env.SMTP_PASS || '',
+            from: process.env.MAIL_FROM || process.env.SMTP_USER || '',
+            to: process.env.MAIL_TO || process.env.SMTP_USER || '',
+          };
+
+          // ───────────── 小工具 ─────────────
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+          function log(...a) {
+            console.log(`[${new Date().toISOString()}]`, ...a);
+          }
+
+          // ───────────── RSS 解析 ─────────────
+          const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+
+          function decodeEntities(s) {
+            if (!s) return '';
+            return s
+              .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+              .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+              .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+              .replace(/&([a-zA-Z]+);/g, (m, n) => (ENTITIES[n] != null ? ENTITIES[n] : m));
+          }
+
+          function tagText(xml, tag) {
+            if (!xml) return '';
+            const m = xml.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'i'));
+            return m ? decodeEntities(m[1].replace(/<[^>]*>/g, '')).trim() : '';
+          }
+
+          function tagAttr(xml, tag, attr) {
+            if (!xml) return '';
+            const m = xml.match(new RegExp(`<${tag}\\b([^>]*)>`, 'i'));
+            if (!m) return '';
+            const a = new RegExp(`${attr}\\s*=\\s*"([^"]*)"`, 'i').exec(m[1]);
+            return a ? decodeEntities(a[1]) : '';
+          }
+
+          function parseFeed(xml) {
+            const feedTitle = tagText(xml.replace(/<entry>[\s\S]*?<\/entry>/g, ''), 'title') || '';
+            const feedChannel = tagText(xml, 'yt:channelId');
+            const out = [];
+            const re = /<entry>([\s\S]*?)<\/entry>/g;
+            let m;
+            while ((m = re.exec(xml)) !== null) {
+              const e = m[1];
+              const id = tagText(e, 'yt:videoId');
+              if (!id) continue;
+              const group = (e.match(/<media:group>([\s\S]*?)<\/media:group>/i) || [])[1] || '';
+              const author = (e.match(/<author>([\s\S]*?)<\/author>/i) || [])[1] || '';
+              out.push({
+                videoId: id,
+                channelId: tagText(e, 'yt:channelId') || feedChannel,
+                title: tagText(group, 'media:title') || tagText(e, 'title'),
+                channelName: tagText(author, 'name') || feedTitle,
+                published: tagText(e, 'published') || '',
+                thumb:
+                  tagAttr(group, 'media:thumbnail', 'url') ||
+                  `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+              });
+            }
+            return out;
+          }
+
+          // ───────────── 抓取 ─────────────
+          async function fetchFeed(ch) {
+            const url = String(FEED_TEMPLATE).replace('{id}', ch.id);
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+            try {
+              const res = await fetch(url, {
+                signal: ctrl.signal,
+                headers: {
+                  'user-agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+                  'accept-encoding': 'identity',
+                },
+              });
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const xml = await res.text();
+              const entries = parseFeed(xml);
+              for (const v of entries) {
+                if (!v.channelName) v.channelName = ch.name || v.channelId;
+                if (!ch.name) ch.name = v.channelName;
+              }
+              return entries;
+            } finally {
+              clearTimeout(timer);
+            }
+          }
+
+          async function mapLimit(items, limit, fn) {
+            const out = new Array(items.length);
+            let i = 0;
+            const workers = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
+              while (true) {
+                const idx = i++;
+                if (idx >= items.length) return;
+                try {
+                  out[idx] = await fn(items[idx], idx);
+                } catch (e) {
+                  out[idx] = { error: e.message };
+                }
+              }
+            });
+            await Promise.all(workers);
+            return out;
+          }
+
+          // ───────────── 状态 ─────────────
+          const fs = require('node:fs');
+
+          function loadState() {
+            try {
+              if (fs.existsSync(STATE_PATH)) {
+                const s = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
+                return { seen: s.seen || {} };
+              }
+            } catch (e) {
+              log(`读取状态失败，按首次运行处理: ${e.message}`);
+            }
+            return null; // null = 首次运行
+          }
+
+          function saveState(state) {
+            const cutoff = Date.now() - 30 * 86400 * 1000;
+            for (const [k, v] of Object.entries(state.seen)) {
+              if (!v || v < cutoff) delete state.seen[k];
+            }
+            fs.writeFileSync(STATE_PATH, JSON.stringify(state));
+          }
+
+          // ───────────── 邮件 ─────────────
+          const net = require('node:net');
+          const tls = require('node:tls');
+
+          function b64(s) {
+            return Buffer.from(s, 'utf8').toString('base64');
+          }
+
+          function wrap76(s) {
+            return s.replace(/(.{76})/g, '$1\r\n');
+          }
+
+          /** 极简 SMTP 客户端（SSL 或明文，AUTH LOGIN） */
+          async function sendMail({ subject, text, html }) {
+            const socket = SMTP.secure
+              ? tls.connect({ host: SMTP.host, port: SMTP.port, servername: SMTP.host })
+              : net.connect({ host: SMTP.host, port: SMTP.port });
+
+            let buf = '';
+            socket.setEncoding('utf8');
+            socket.on('data', (d) => {
+              buf += d;
+            });
+            socket.setTimeout(TIMEOUT_MS, () => socket.destroy(new Error('SMTP 超时')));
+            socket.on('error', () => {}); // 连接错误由下面的读超时统一抛出
+
+            const readLine = async (timeoutMs = TIMEOUT_MS) => {
+              const start = Date.now();
+              while (Date.now() - start < timeoutMs) {
+                const idx = buf.indexOf('\r\n');
+                if (idx >= 0) {
+                  const line = buf.slice(0, idx);
+                  buf = buf.slice(idx + 2);
+                  return line;
+                }
+                await sleep(20);
+              }
+              throw new Error(`SMTP 读超时，缓冲: ${JSON.stringify(buf.slice(-200))}`);
+            };
+
+            const readResp = async () => {
+              const lines = [];
+              while (true) {
+                const line = await readLine();
+                lines.push(line);
+                if (line.length < 4 || line[3] !== '-') break; // 多行响应以 "250-" 续行
+              }
+              return lines;
+            };
+
+            const expect = async (codes, what) => {
+              const lines = await readResp();
+              const code = (lines[lines.length - 1] || '').slice(0, 3);
+              if (!codes.includes(code)) {
+                throw new Error(`SMTP ${what} 失败: ${lines.join(' | ')}`);
+              }
+              return lines;
+            };
+
+            try {
+              await expect(['220'], '连接');
+              socket.write(`EHLO yt2qq\r\n`);
+              await expect(['250'], 'EHLO');
+
+              if (SMTP.user) {
+                socket.write('AUTH LOGIN\r\n');
+                await expect(['334'], 'AUTH');
+                socket.write(`${b64(SMTP.user)}\r\n`);
+                await expect(['334'], 'AUTH 用户名');
+                socket.write(`${b64(SMTP.pass)}\r\n`);
+                await expect(['235'], 'AUTH 密码');
+              }
+
+              socket.write(`MAIL FROM:<${SMTP.from}>\r\n`);
+              await expect(['250'], 'MAIL FROM');
+              socket.write(`RCPT TO:<${SMTP.to}>\r\n`);
+              await expect(['250', '251'], 'RCPT TO');
+              socket.write('DATA\r\n');
+              await expect(['354'], 'DATA');
+
+              const subjectShort = subject.length > 60 ? subject.slice(0, 60) + '…' : subject;
+              const msg = [
+                `From: =?UTF-8?B?${b64('YouTube 更新')}?= <${SMTP.from}>`,
+                `To: <${SMTP.to}>`,
+                `Subject: =?UTF-8?B?${b64(subjectShort)}?=`,
+                'MIME-Version: 1.0',
+                html
+                  ? 'Content-Type: text/html; charset=UTF-8'
+                  : 'Content-Type: text/plain; charset=UTF-8',
+                'Content-Transfer-Encoding: base64',
+                '',
+                wrap76(b64(html || text)),
+                '',
+                '.',
+                '',
+              ].join('\r\n');
+
+              socket.write(msg);
+              await expect(['250'], '发送正文');
+              socket.write('QUIT\r\n');
+              await sleep(50);
+            } finally {
+              socket.end();
+            }
+          }
+
+          // ───────────── 组信 ─────────────
+          function escapeHtml(s) {
+            return String(s || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;');
+          }
+
+          function buildMail(items) {
+            const n = items.length;
+            const subject =
+              n === 1
+                ? `[YouTube] ${items[0].channelName}：${items[0].title}`
+                : `[YouTube] ${n} 个新视频：${items.slice(0, 2).map((v) => v.title).join(' / ')}`;
+            const rows = items
+              .map((v, i) => {
+                const url = `https://www.youtube.com/watch?v=${v.videoId}`;
+                const when = v.published ? new Date(v.published).toLocaleString('zh-CN', { hour12: false }) : '';
+                return `<div style="margin:0 0 18px 0;padding-bottom:14px;border-bottom:1px solid #eee">
+            <div style="font-size:13px;color:#888;margin-bottom:6px">${i + 1}. ${escapeHtml(v.channelName)}　${escapeHtml(when)}</div>
+            <a href="${url}" style="color:#1a0dab;text-decoration:none;font-size:16px;font-weight:600">${escapeHtml(v.title)}</a>
+            <div style="margin:8px 0 6px 0"><a href="${url}"><img src="${escapeHtml(v.thumb)}" style="max-width:100%;width:320px;border-radius:6px" alt=""></a></div>
+            <div style="font-size:13px"><a href="${url}" style="color:#666">${url}</a></div>
+          </div>`;
+              })
+              .join('\n');
+
+            const html = `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;max-width:640px;margin:0 auto;padding:8px 16px;color:#222">
+          <h2 style="font-size:17px;margin:12px 0 18px">有 ${n} 个新视频</h2>
+          ${rows}
+          <p style="font-size:12px;color:#999;margin-top:20px">由 GitHub Actions 自动发送 · 每 15 分钟检查一次</p>
+          </div>`;
+            return { subject, html };
+          }
+
+          // ───────────── 主流程 ─────────────
+          async function main() {
+            if (!CHANNELS.length) {
+              throw new Error('频道列表为空，构建脚本没有注入 CHANNELS');
+            }
+            log(`频道数 ${CHANNELS.length}，开始抓取（并发 ${CONCURRENCY}）`);
+
+            const results = await mapLimit(CHANNELS, CONCURRENCY, fetchFeed);
+            let ok = 0;
+            const all = [];
+            for (const r of results) {
+              if (Array.isArray(r)) {
+                ok++;
+                all.push(...r);
+              }
+            }
+            log(`抓取完成：成功 ${ok}/${CHANNELS.length}，条目 ${all.length}`);
+
+            const prev = loadState();
+            const state = prev || { seen: {} };
+            const firstRun = prev === null;
+
+            const cutoff = Date.now() - MAX_AGE_HOURS * 3600 * 1000;
+            const fresh = [];
+            const seenInRun = new Set();
+            for (const v of all) {
+              if (state.seen[v.videoId] || seenInRun.has(v.videoId)) continue;
+              const ts = v.published ? Date.parse(v.published) : NaN;
+              if (!isNaN(ts) && ts < cutoff) {
+                state.seen[v.videoId] = Date.now(); // 太旧，直接记掉
+                continue;
+              }
+              if (SKIP_PATTERNS.some((p) => new RegExp(p, 'i').test(v.title))) {
+                state.seen[v.videoId] = Date.now();
+                continue;
+              }
+              seenInRun.add(v.videoId);
+              fresh.push(v);
+            }
+
+            if (firstRun) {
+              log(`首次运行：把现有 ${fresh.length} 条记为已读，不发历史`);
+              for (const v of fresh) state.seen[v.videoId] = Date.now();
+              if (!DRY_RUN) {
+                await sendMail({
+                  subject: `[YouTube] 监控已启动（${CHANNELS.length} 个频道）`,
+                  html: `<div style="font-family:sans-serif;padding:8px 16px">
+          <h2 style="font-size:17px">监控已启动 ✅</h2>
+          <p>正在跟踪 <b>${CHANNELS.length}</b> 个频道，每 15 分钟检查一次。</p>
+          <p>以后有新视频，会汇总成一封邮件发到这个邮箱。</p>
+          <p style="font-size:12px;color:#999">如果没有收到后续邮件，可能是邮件进了垃圾箱，记得把本地址加入白名单。</p>
+          </div>`,
+                });
+                log('已发送启动确认邮件');
+              } else {
+                log('DRY_RUN：跳过启动邮件');
+              }
+              saveState(state);
+              return;
+            }
+
+            if (!fresh.length) {
+              log('没有新视频');
+              saveState(state);
+              return;
+            }
+
+            fresh.sort((a, b) => Date.parse(a.published || 0) - Date.parse(b.published || 0));
+            const batch = fresh.slice(0, MAX_ITEMS_PER_MAIL);
+            const mail = buildMail(batch);
+
+            if (DRY_RUN) {
+              log(`DRY_RUN：本应发送 ${batch.length} 条`);
+              console.log(mail.subject);
+              console.log(mail.html.slice(0, 300));
+            } else {
+              await sendMail(mail);
+              log(`已发送邮件，包含 ${batch.length} 条新视频`);
+            }
+
+            for (const v of fresh) state.seen[v.videoId] = Date.now();
+            saveState(state);
+          }
+
+          module.exports = { main, parseFeed, buildMail };
+
+          if (require.main === module) {
+            main().catch((e) => {
+              console.error('运行失败:', e.stack || e.message);
+              process.exit(1);
+            });
+          }
+          YTS_EOF
+          node poll.js
+
+      - name: 保存已读状态
+        if: always()
+        run: |
+          if [ -f state.json ] && [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "yt2qq"
+            git config user.email "yt2qq@users.noreply.github.com"
+            git add state.json
+            git commit -m "state $(date -u +%FT%TZ)"
+            git push || echo "push 失败（可能是权限设置），本次不保存状态"
+          fi
